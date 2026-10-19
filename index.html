@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpenClaw & AX 에이전트 하드웨어 시뮬레이터</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    input[type="range"] { accent-color: #2563eb; }
+    .bar-transition { transition: width 0.35s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.25s ease; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-4 md:p-8 font-sans">
+  <div class="max-w-5xl mx-auto space-y-6">
+    <header class="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-5">
+      <div>
+        <div class="inline-flex items-center gap-2 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20 mb-2">
+          Local LLM & Agent Infrastructure Sizer
+        </div>
+        <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-white">OpenClaw & AX 에이전트 하드웨어 시뮬레이터</h1>
+        <p class="text-sm text-slate-400 mt-1">모델 체급과 누적 컨텍스트(KV Cache)에 따른 VRAM 병목 및 에이전트 1턴당 응답 지연 시간(TTFT + 생성)을 비교합니다.</p>
+      </div>
+      <button id="shareBtn" onclick="copyShareUrl()" class="self-start md:self-auto px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 border border-slate-700 transition flex items-center gap-2">
+        <span>🔗 현재 세팅 링크 복사</span>
+      </button>
+    </header>
+    <section class="grid grid-cols-1 md:grid-cols-3 gap-4 bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-lg">
+      <div class="space-y-2">
+        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400">1. 로컬 LLM 모델 구성</label>
+        <select id="modelPreset" onchange="updateSim()" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500">
+          <option value="qwen27_q4">27B~32B 4-bit 경량 (가중치 ~17GB)</option>
+          <option value="qwen32_q6" selected>27B~32B 6~8-bit 고정밀 (가중치 ~26GB)</option>
+          <option value="multi_agent">멀티 에이전트: 32B 플래너 + 14B 코더 (~38GB)</option>
+          <option value="large_70b">70B Q4 또는 100B+ MoE 대형 (~45GB)</option>
+        </select>
+        <p id="modelDesc" class="text-xs text-slate-400 leading-relaxed"></p>
+      </div>
+      <div class="space-y-2">
+        <div class="flex justify-between items-center">
+          <label class="text-xs font-semibold uppercase tracking-wider text-slate-400">2. OpenClaw 누적 컨텍스트</label>
+          <span id="ctxLabel" class="text-sm font-bold text-blue-400">32,000 tok</span>
+        </div>
+        <input id="ctxSlider" type="range" min="8" max="128" step="8" value="32" oninput="updateSim()" class="w-full h-2 bg-slate-800 rounded-lg cursor-pointer" />
+        <div class="flex justify-between text-[11px] text-slate-500">
+          <span>8k (초기 턴)</span><span>32k (일반 작업)</span><span>64k (코드 분석)</span><span>128k (장기 세션)</span>
+        </div>
+      </div>
+      <div class="space-y-2 flex flex-col justify-between">
+        <label class="block text-xs font-semibold uppercase tracking-wider text-slate-400">3. 사내 AX 부가 스택 동시 구동</label>
+        <label class="flex items-center justify-between p-3 rounded-xl bg-slate-950 border border-slate-800 cursor-pointer hover:border-slate-700 transition">
+          <div>
+            <div class="text-sm font-medium text-slate-200">RAG / 임베딩 / Docker (+6GB)</div>
+            <div class="text-xs text-slate-500">벡터 DB, 리랭커, MCP 서버 상주</div>
+          </div>
+          <input id="axToggle" type="checkbox" checked onchange="updateSim()" class="w-5 h-5 accent-blue-600 rounded cursor-pointer" />
+        </label>
+      </div>
+    </section>
+    <section id="verdictBanner" class="rounded-2xl p-4 border bg-blue-950/30 border-blue-800/50 flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <div>
+        <span class="text-xs font-bold uppercase tracking-wider text-blue-400">시뮬레이션 진단 결과</span>
+        <h2 id="verdictTitle" class="text-base md:text-lg font-semibold text-white mt-0.5"></h2>
+      </div>
+      <div id="verdictBadge" class="text-xs font-semibold px-3 py-1.5 rounded-lg bg-blue-500/20 text-blue-300 border border-blue-500/30 shrink-0"></div>
+    </section>
+    <section class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <h3 class="text-base font-bold text-white">① 통합 메모리 점유율 및 스왑(Swap) 한계 비교</h3>
+          <p class="text-xs text-slate-400">시스템 OS 점유를 제외한 가용 메모리를 초과하면 SSD 스왑이 발생해 추론 속도가 급락합니다.</p>
+        </div>
+        <div class="flex flex-wrap gap-3 text-xs">
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-slate-600 inline-block"></span>OS 기본 점유</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-blue-500 inline-block"></span>모델 가중치</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-cyan-400 inline-block"></span>KV 캐시(컨텍스트)</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-indigo-400 inline-block"></span>AX 도구(+6GB)</span>
+        </div>
+      </div>
+      <div id="memoryBars" class="space-y-4 pt-2"></div>
+    </section>
+    <section class="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div>
+          <h3 class="text-base font-bold text-white">② OpenClaw 에이전트 1턴당 총 응답 시간 (짧을수록 쾌적)</h3>
+          <p class="text-xs text-slate-400">누적 컨텍스트를 읽는 시간(Prefill / TTFT) + 도구 호출 JSON 및 답변 400토큰 생성 시간(Decoding) 합산</p>
+        </div>
+        <div class="flex gap-3 text-xs">
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-amber-400 inline-block"></span>프롬프트 처리 (Prefill)</span>
+          <span class="flex items-center gap-1.5"><span class="w-3 h-3 rounded-sm bg-emerald-400 inline-block"></span>토큰 생성 (400 tok)</span>
+        </div>
+      </div>
+      <div id="latencyBars" class="space-y-4 pt-2"></div>
+    </section>
+  </div>
+  <script>
+    const MODELS = {
+      qwen27_q4: { name: "27B~32B (4-bit)", weightGB: 17, kvPer32k: 5.5, speedFactor: 1.0, desc: "가벼운 4-bit 양자화입니다. 일반 대화는 빠르지만 컨텍스트가 길어지면 복잡한 멀티스텝 JSON Tool Call에서 간헐적 스키마 오류가 날 수 있습니다." },
+      qwen32_q6: { name: "27B~32B (6~8-bit 고정밀)", weightGB: 26, kvPer32k: 7.5, speedFactor: 0.78, desc: "OpenClaw 도구 호출 정확도를 클라우드 모델(GLM-5.3 / DeepSeek Flash) 수준으로 유지하기 위한 권장 마지노선입니다." },
+      multi_agent: { name: "멀티 에이전트 (32B + 14B 동시 상주)", weightGB: 38, kvPer32k: 9.0, speedFactor: 0.72, desc: "오케스트레이터(32B)와 코드/요약 서브 에이전트(14B)를 메모리에 동시에 올려 모델 스왑 딜레이 없이 AX 파이프라인을 테스트합니다." },
+      large_70b: { name: "70B (4-bit) / 100B+ MoE", weightGB: 45, kvPer32k: 11.0, speedFactor: 0.48, desc: "고난도 추론 및 아키텍처 설계를 위한 대형 모델입니다. 64GB 이상 통합 메모리가 필수입니다." }
+    };
+    const HARDWARE = [
+      { id: "m4max_36", name: "Mac Studio M4 Max (36GB / 32C)", badge: "현재 기준", totalGB: 36, osGB: 7, basePrefillTokSec: 1150, baseDecodeTokSec: 26 },
+      { id: "m5max_64", name: "Mac Studio M5 Max (64GB / 40C 풀칩)", badge: "가성비 업그레이드", totalGB: 64, osGB: 7, basePrefillTokSec: 4300, baseDecodeTokSec: 39 },
+      { id: "m5max_128", name: "Mac Studio M5 Max (128GB / 40C 풀칩)", badge: "올인원 워크스테이션", totalGB: 128, osGB: 7, basePrefillTokSec: 4300, baseDecodeTokSec: 39 },
+      { id: "dgx_spark", name: "NVIDIA DGX Spark (128GB Blackwell)", badge: "전용 AI 노드", totalGB: 128, osGB: 2, basePrefillTokSec: 7800, baseDecodeTokSec: 19 }
+    ];
+    function updateSim() {
+      const modelKey = document.getElementById("modelPreset").value;
+      const ctxK = parseInt(document.getElementById("ctxSlider").value, 10);
+      const axOn = document.getElementById("axToggle").checked;
+      const model = MODELS[modelKey];
+      document.getElementById("ctxLabel").textContent = (ctxK * 1000).toLocaleString() + " tok";
+      document.getElementById("modelDesc").textContent = model.desc;
+      const kvGB = +(model.kvPer32k * (ctxK / 32)).toFixed(1);
+      const axGB = axOn ? 6 : 0;
+      const memContainer = document.getElementById("memoryBars");
+      const latContainer = document.getElementById("latencyBars");
+      memContainer.innerHTML = ""; latContainer.innerHTML = "";
+      let m4OOM = false, m5_64OOM = false;
+      HARDWARE.forEach(hw => {
+        const usedGB = +(hw.osGB + model.weightGB + kvGB + axGB).toFixed(1);
+        const isSwap = usedGB > hw.totalGB;
+        if (hw.id === "m4max_36" && isSwap) m4OOM = true;
+        if (hw.id === "m5max_64" && isSwap) m5_64OOM = true;
+        const denom = Math.max(hw.totalGB, usedGB);
+        const osPct = ((hw.osGB / denom) * 100).toFixed(1), weightPct = ((model.weightGB / denom) * 100).toFixed(1), kvPct = ((kvGB / denom) * 100).toFixed(1), axPct = ((axGB / denom) * 100).toFixed(1);
+        const statusBadge = isSwap
+          ? `<span class="px-2 py-0.5 text-[11px] font-bold rounded bg-rose-500/20 text-rose-400 border border-rose-500/30">⚠️ 용량 초과 (${usedGB}GB / ${hw.totalGB}GB) · SSD 스왑 급락</span>`
+          : `<span class="px-2 py-0.5 text-[11px] font-semibold rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">쾌적 (${usedGB}GB / ${hw.totalGB}GB · 여유 ${(hw.totalGB - usedGB).toFixed(1)}GB)</span>`;
+        memContainer.innerHTML += `<div class="space-y-1.5"><div class="flex flex-wrap items-center justify-between gap-2 text-xs"><div class="flex items-center gap-2"><span class="font-bold text-slate-100 text-sm">${hw.name}</span><span class="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[11px]">${hw.badge}</span></div>${statusBadge}</div><div class="w-full h-6 bg-slate-950 rounded-lg overflow-hidden flex border ${isSwap ? "border-rose-500/60" : "border-slate-800"}"><div style="width:${osPct}%" class="bar-transition bg-slate-600 h-full"></div><div style="width:${weightPct}%" class="bar-transition bg-blue-500 h-full"></div><div style="width:${kvPct}%" class="bar-transition bg-cyan-400 h-full"></div><div style="width:${axPct}%" class="bar-transition bg-indigo-400 h-full"></div></div></div>`;
+        const swapPenalty = isSwap ? 6.5 : 1.0;
+        const prefillSec = +(((ctxK * 1000) / (hw.basePrefillTokSec * model.speedFactor)) * swapPenalty).toFixed(1);
+        const decodeSec = +((400 / (hw.baseDecodeTokSec * model.speedFactor)) * swapPenalty).toFixed(1);
+        const totalSec = +(prefillSec + decodeSec).toFixed(1);
+        const prefillWidth = Math.min((prefillSec / 90) * 100, 75).toFixed(1), decodeWidth = Math.min((decodeSec / 90) * 100, 100 - prefillWidth).toFixed(1);
+        latContainer.innerHTML += `<div class="space-y-1.5"><div class="flex flex-wrap items-center justify-between text-xs"><span class="font-semibold text-slate-200">${hw.name}</span><span class="font-mono ${isSwap ? "text-rose-400 font-bold" : "text-slate-300"}">총 <strong>${totalSec}초</strong> (프롬프트 읽기 ${prefillSec}초 + 답변 생성 ${decodeSec}초)</span></div><div class="w-full h-5 bg-slate-950 rounded-lg overflow-hidden flex border border-slate-800"><div style="width:${prefillWidth}%" class="bar-transition bg-amber-400 h-full"></div><div style="width:${decodeWidth}%" class="bar-transition bg-emerald-400 h-full"></div></div></div>`;
+      });
+      const vTitle = document.getElementById("verdictTitle"), vBadge = document.getElementById("verdictBadge");
+      if (!m4OOM && ctxK <= 24) { vTitle.textContent = "현재 세팅은 M4 Max 36GB에서도 스왑 없이 구동 가능합니다!"; vBadge.textContent = "추천: M4 Max 36GB 유지"; }
+      else if (m4OOM && !m5_64OOM) { vTitle.textContent = "36GB 메모리 한계(Swap)에 도달했습니다. M5 Max 64GB(40코어)에서 가장 쾌적하게 해결됩니다."; vBadge.textContent = "추천: M5 Max 64GB 업그레이드"; }
+      else { vTitle.textContent = "초대형 모델/컨텍스트 구간입니다. M5 Max 128GB 또는 DGX Spark 전용 서버 분리가 필요합니다."; vBadge.textContent = "추천: 128GB급 (M5 Max 또는 DGX Spark)"; }
+    }
+    function copyShareUrl() {
+      const params = new URLSearchParams({ model: document.getElementById("modelPreset").value, ctx: document.getElementById("ctxSlider").value, ax: document.getElementById("axToggle").checked ? "1" : "0" });
+      navigator.clipboard.writeText(`${window.location.origin}${window.location.pathname}?${params.toString()}`);
+      const btn = document.getElementById("shareBtn"); btn.innerHTML = "<span>✅ 현재 세팅 URL 복사됨!</span>";
+      setTimeout(() => { btn.innerHTML = "<span>🔗 현재 세팅 링크 복사</span>"; }, 2000);
+    }
+    window.addEventListener("DOMContentLoaded", () => {
+      const params = new URLSearchParams(window.location.search);
+      if (params.has("model") && MODELS[params.get("model")]) document.getElementById("modelPreset").value = params.get("model");
+      if (params.has("ctx")) document.getElementById("ctxSlider").value = params.get("ctx");
+      if (params.has("ax")) document.getElementById("axToggle").checked = params.get("ax") === "1";
+      updateSim();
+    });
+  </script>
+</body>
+</html>
