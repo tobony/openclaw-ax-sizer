@@ -19,8 +19,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install marimo
+        run: python -m pip install --upgrade pip "marimo>=0.19.0"
+
+      - name: Prepare static site
+        run: |
+          mkdir -p site
+          cp index.html site/index.html
+          cp .nojekyll site/.nojekyll
+
+      - name: Export marimo notebook to WebAssembly HTML
+        run: |
+          marimo check openclaw_ax_sizer_wasm.py --select MW
+          marimo export html-wasm openclaw_ax_sizer_wasm.py -o site/marimo --mode run
+
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: "."
+          path: site
+
       - id: deployment
         uses: actions/deploy-pages@v4
