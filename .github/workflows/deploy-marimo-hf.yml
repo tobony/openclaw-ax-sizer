@@ -1,0 +1,49 @@
+name: Deploy marimo app to Hugging Face Spaces
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out GitHub repository
+        uses: actions/checkout@v4
+
+      - name: Validate deployment secrets
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ secrets.HF_SPACE_ID }}
+        run: |
+          test -n "$HF_TOKEN" || (echo "Missing repository secret: HF_TOKEN" && exit 1)
+          test -n "$HF_SPACE_ID" || (echo "Missing repository secret: HF_SPACE_ID (format: username/space-name)" && exit 1)
+
+      - name: Prepare Space files
+        run: |
+          mkdir -p hf-space
+          cp openclaw_ax_sizer_marimo.py hf-space/app.py
+          cp requirements.txt hf-space/requirements.txt
+          cp deploy/huggingface/Dockerfile hf-space/Dockerfile
+          cp deploy/huggingface/README.md hf-space/README.md
+
+      - name: Push app to Hugging Face Spaces
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ secrets.HF_SPACE_ID }}
+        run: |
+          set -euo pipefail
+          git clone "https://huggingface.co/spaces/$HF_SPACE_ID" hf-space-repo
+          cp hf-space/* hf-space-repo/
+          cd hf-space-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.py requirements.txt Dockerfile README.md
+          if git diff --cached --quiet; then
+            echo "No deployment changes to push."
+            exit 0
+          fi
+          git commit -m "Deploy marimo app from GitHub"
+          git push "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}" HEAD:main
