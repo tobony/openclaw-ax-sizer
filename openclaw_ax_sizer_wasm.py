@@ -94,8 +94,7 @@ def _(mo, rows):
         }
         for r in rows
     ]
-    mo.md("## 1. 통합 메모리 추정")
-    mo.ui.table(memory_table)
+    mo.vstack([mo.md("## 1. 통합 메모리 추정"), mo.ui.table(memory_table)])
     return
 
 
@@ -111,8 +110,7 @@ def _(mo, rows):
         }
         for r in rows
     ]
-    mo.md("## 2. 에이전트 1턴당 추정 응답 시간")
-    mo.ui.table(latency_table)
+    mo.vstack([mo.md("## 2. 에이전트 1턴당 추정 응답 시간"), mo.ui.table(latency_table)])
     return
 
 
